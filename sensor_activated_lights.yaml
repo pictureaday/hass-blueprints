@@ -1,0 +1,153 @@
+blueprint:
+  author: Brandon Bebout
+  name: Sensor-Activated Lights with Timeout
+  description: >
+    Turn on one or more lights or switches when any of the selected binary
+    sensors become active. Keeps them on as long as any sensor remains active,
+    then turns them off after a configurable timeout once all sensors go clear.
+  domain: automation
+  input:
+    sensors:
+      name: Binary Sensors
+      description: >
+        One or more binary sensors (motion, door, occupancy, vibration, etc.)
+        that trigger the lights. Lights stay on while ANY sensor is active.
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+
+    lights:
+      name: Lights / Switches
+      description: >
+        One or more lights or switches to control. All will be turned on
+        together and turned off together.
+      selector:
+        entity:
+          domain:
+            - light
+            - switch
+          multiple: true
+
+    timeout:
+      name: Off Delay (timeout)
+      description: >
+        How long to wait after ALL sensors have gone clear before turning
+        the lights off.
+      default:
+        minutes: 5
+      selector:
+        duration: {}
+
+    turn_on_action:
+      name: Extra Actions on Turn On (optional)
+      description: >
+        Optional additional actions to run when the lights turn on
+        (e.g., set brightness, color temperature, send a notification).
+      default: []
+      selector:
+        action: {}
+
+    turn_off_action:
+      name: Extra Actions on Turn Off (optional)
+      description: >
+        Optional additional actions to run when the lights turn off.
+      default: []
+      selector:
+        action: {}
+
+variables:
+  sensor_list: !input sensors
+  light_list: !input lights
+
+# Re-evaluate whenever any selected sensor changes state
+trigger:
+  - platform: state
+    entity_id: !input sensors
+
+condition: []
+
+action:
+  - choose:
+      # ── Branch 1: at least one sensor is ON → turn lights on ──────────────
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ sensor_list | select('is_state', 'on') | list | count > 0 }}
+        sequence:
+          # Cancel any pending off-timer
+          - alias: Cancel pending off timer
+            if:
+              - condition: template
+                value_template: "{{ true }}"
+            then:
+              - delay:
+                  seconds: 0   # no-op; the choose branch already breaks the wait
+
+          - alias: Turn on all lights/switches
+            repeat:
+              for_each: "{{ light_list }}"
+              sequence:
+                - choose:
+                    - conditions:
+                        - condition: template
+                          value_template: >
+                            {{ device_attr(repeat.item, 'domain') == 'light'
+                               or state_attr(repeat.item, 'domain') == 'light'
+                               or repeat.item.startswith('light.') }}
+                      sequence:
+                        - service: light.turn_on
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                  default:
+                    - service: switch.turn_on
+                      target:
+                        entity_id: "{{ repeat.item }}"
+
+          - alias: Run optional turn-on actions
+            choose: []
+            default: !input turn_on_action
+
+      # ── Branch 2: all sensors OFF → wait timeout, then turn lights off ────
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ sensor_list | reject('is_state', 'on') | list | count
+                 == sensor_list | count }}
+        sequence:
+          - alias: Wait for timeout (restartable)
+            wait_template: >
+              {{ sensor_list | select('is_state', 'on') | list | count > 0 }}
+            timeout: !input timeout
+            continue_on_timeout: true
+
+          - alias: Re-check – abort if a sensor came back on during the wait
+            condition: template
+            value_template: >
+              {{ sensor_list | select('is_state', 'on') | list | count == 0 }}
+
+          - alias: Turn off all lights/switches
+            repeat:
+              for_each: "{{ light_list }}"
+              sequence:
+                - choose:
+                    - conditions:
+                        - condition: template
+                          value_template: >
+                            {{ repeat.item.startswith('light.') }}
+                      sequence:
+                        - service: light.turn_off
+                          target:
+                            entity_id: "{{ repeat.item }}"
+                  default:
+                    - service: switch.turn_off
+                      target:
+                        entity_id: "{{ repeat.item }}"
+
+          - alias: Run optional turn-off actions
+            choose: []
+            default: !input turn_off_action
+
+mode: restart   # Restart automation on new trigger so the timer always resets
+max_exceeded: silent
+
