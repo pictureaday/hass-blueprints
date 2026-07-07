@@ -1,10 +1,29 @@
 blueprint:
-  name: Time-Based Light Color
+  name: Time-Based Light Color (Dynamic)
   description: >
     Automatically change a light's color and brightness based on the time of
-    day. Configure up to 4 time periods, each with its own start time, color,
-    and brightness. The light switches to the matching color at each period's
-    start time.
+    day, with a dynamic (unlimited) number of time periods. Add as many
+    periods as you like, each with its own start time, color, and brightness.
+
+    Periods are entered as a list, for example:
+
+    ```
+    - time: "06:00:00"
+      color: [255, 244, 229]
+      brightness: 100
+    - time: "12:00:00"
+      color: [255, 255, 255]
+      brightness: 100
+    - time: "18:00:00"
+      color: [255, 147, 41]
+      brightness: 80
+    - time: "21:30:00"
+      color: [255, 79, 0]
+      brightness: 40
+    ```
+
+    The automation checks every minute and applies whichever period's start
+    time has most recently passed (wrapping correctly around midnight).
   domain: automation
   input:
     light_target:
@@ -15,137 +34,49 @@ blueprint:
           entity:
             domain: light
 
-    period_1_time:
-      name: Period 1 - Start Time
-      description: Time this color period begins.
-      default: "06:00:00"
+    periods:
+      name: Color Periods
+      description: >
+        A list of periods. Each item needs: time (24h "HH:MM:SS"),
+        color (RGB as [r, g, b]), and brightness (1-100). Add or remove
+        as many entries as you want.
+      default:
+        - time: "06:00:00"
+          color: [255, 244, 229]
+          brightness: 100
+        - time: "12:00:00"
+          color: [255, 255, 255]
+          brightness: 100
+        - time: "18:00:00"
+          color: [255, 147, 41]
+          brightness: 80
+        - time: "21:30:00"
+          color: [255, 79, 0]
+          brightness: 40
       selector:
-        time: {}
-    period_1_color:
-      name: Period 1 - Color
-      default: [255, 244, 229]
-      selector:
-        color_rgb: {}
-    period_1_brightness:
-      name: Period 1 - Brightness (%)
-      default: 100
-      selector:
-        number:
-          min: 1
-          max: 100
-          unit_of_measurement: "%"
-
-    period_2_time:
-      name: Period 2 - Start Time
-      description: Time this color period begins.
-      default: "12:00:00"
-      selector:
-        time: {}
-    period_2_color:
-      name: Period 2 - Color
-      default: [255, 255, 255]
-      selector:
-        color_rgb: {}
-    period_2_brightness:
-      name: Period 2 - Brightness (%)
-      default: 100
-      selector:
-        number:
-          min: 1
-          max: 100
-          unit_of_measurement: "%"
-
-    period_3_time:
-      name: Period 3 - Start Time
-      description: Time this color period begins.
-      default: "18:00:00"
-      selector:
-        time: {}
-    period_3_color:
-      name: Period 3 - Color
-      default: [255, 147, 41]
-      selector:
-        color_rgb: {}
-    period_3_brightness:
-      name: Period 3 - Brightness (%)
-      default: 80
-      selector:
-        number:
-          min: 1
-          max: 100
-          unit_of_measurement: "%"
-
-    period_4_time:
-      name: Period 4 - Start Time
-      description: Time this color period begins.
-      default: "21:30:00"
-      selector:
-        time: {}
-    period_4_color:
-      name: Period 4 - Color
-      default: [255, 79, 0]
-      selector:
-        color_rgb: {}
-    period_4_brightness:
-      name: Period 4 - Brightness (%)
-      default: 40
-      selector:
-        number:
-          min: 1
-          max: 100
-          unit_of_measurement: "%"
+        object: {}
 
 trigger:
-  - platform: time
-    at: !input period_1_time
-    id: period_1
-  - platform: time
-    at: !input period_2_time
-    id: period_2
-  - platform: time
-    at: !input period_3_time
-    id: period_3
-  - platform: time
-    at: !input period_4_time
-    id: period_4
+  - platform: time_pattern
+    minutes: "/1"
+  - platform: homeassistant
+    event: start
+
+variables:
+  periods: !input periods
+  sorted_periods: "{{ periods | sort(attribute='time') }}"
+  now_time: "{{ now().strftime('%H:%M:%S') }}"
+  active_period: >
+    {% set past = sorted_periods | selectattr('time', 'le', now_time) | list %}
+    {{ past[-1] if past | length > 0 else sorted_periods[-1] }}
+
+condition: []
 
 action:
-  - choose:
-      - conditions:
-          - condition: trigger
-            id: period_1
-        sequence:
-          - action: light.turn_on
-            target: !input light_target
-            data:
-              rgb_color: !input period_1_color
-              brightness_pct: !input period_1_brightness
-      - conditions:
-          - condition: trigger
-            id: period_2
-        sequence:
-          - action: light.turn_on
-            target: !input light_target
-            data:
-              rgb_color: !input period_2_color
-              brightness_pct: !input period_2_brightness
-      - conditions:
-          - condition: trigger
-            id: period_3
-        sequence:
-          - action: light.turn_on
-            target: !input light_target
-            data:
-              rgb_color: !input period_3_color
-              brightness_pct: !input period_3_brightness
-      - conditions:
-          - condition: trigger
-            id: period_4
-        sequence:
-          - action: light.turn_on
-            target: !input light_target
-            data:
-              rgb_color: !input period_4_color
-              brightness_pct: !input period_4_brightness
+  - action: light.turn_on
+    target: !input light_target
+    data:
+      rgb_color: "{{ active_period.color }}"
+      brightness_pct: "{{ active_period.brightness }}"
 
 mode: single
